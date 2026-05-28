@@ -119,8 +119,14 @@ def mark_transaction_failed(order_id: str) -> None:
 
 
 def get_transaction(order_id: str) -> Optional[Transaction]:
-    """Ambil satu transaksi berdasarkan order_id."""
+    """Ambil satu transaksi berdasarkan order_id atau gateway_txn_id."""
     with Session(_engine) as session:
-        return session.exec(
+        tx = session.exec(
             select(Transaction).where(Transaction.order_id == order_id)
+        ).first()
+        if tx:
+            return tx
+        # Fallback: cari berdasarkan gateway_txn_id
+        return session.exec(
+            select(Transaction).where(Transaction.gateway_txn_id == order_id)
         ).first()
