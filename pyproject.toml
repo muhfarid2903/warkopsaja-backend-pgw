@@ -1,0 +1,23 @@
+[project]
+name = "warkopsaja-backend-pgw"
+version = "2.0.0"
+description = "MikroTik Hotspot Payment Backend with Paygatews Integration"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111,<1",
+    "uvicorn[standard]>=0.29,<1",
+    "python-dotenv>=1.0,<2",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "routeros-api>=0.17,<1",
+    "httpx>=0.27,<1",
+    "slowapi>=0.1.9,<1",        # rate limiting
+    "sqlmodel>=0.0.19,<1",      # SQLite transaction log
+]
+
+[tool.uv]
+dev-dependencies = [
+    "httpx>=0.27",      # for TestClient
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]

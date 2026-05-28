@@ -1,0 +1,9 @@
+fastapi<1,>=0.111
+uvicorn[standard]<1,>=0.29
+python-dotenv<2,>=1.0
+pydantic<3,>=2.7
+pydantic-settings<3,>=2.3
+routeros-api<1,>=0.17
+httpx<1,>=0.27
+slowapi<1,>=0.1.9
+sqlmodel<1,>=0.0.19

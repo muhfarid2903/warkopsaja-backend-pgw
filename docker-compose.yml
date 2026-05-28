@@ -1,0 +1,18 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      MIKROTIK_HOST: ${MIKROTIK_HOST}
+      MIKROTIK_USERNAME: ${MIKROTIK_USERNAME}
+      MIKROTIK_PASSWORD: ${MIKROTIK_PASSWORD}
+      MIKROTIK_PORT: ${MIKROTIK_PORT}
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY}
+      MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY}
+      MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
+      DATABASE_URL: ${DATABASE_URL}
+    volumes:
+      - ./data:/app/data
