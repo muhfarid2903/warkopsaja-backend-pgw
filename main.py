@@ -34,6 +34,8 @@ from slowapi.util import get_remote_address
 # Load .env sebelum apapun diinisialisasi
 load_dotenv()
 
+from routeros_api.exceptions import RouterOsApiConnectionError
+
 from src.cors import setup_cors
 from src.database import init_db, log_transaction, mark_transaction_success
 from src.paygatews import get_paygatews_client
@@ -46,7 +48,12 @@ from src.model import (
     ProfileResponse,
 )
 from src.profile import parse_profile_name
+from src.profile_cache import get_profiles_cached
 from src.webhook import handle_paygatews_notification
+
+# Pesan ramah yang dibalas saat MikroTik tidak bisa dihubungi. Frontend
+# mendeteksi HTTP 503 → menampilkan UI "Router sedang offline".
+_MT_DOWN_DETAIL = "Router hotspot lagi tidak terhubung. Coba lagi sebentar."
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -129,6 +136,12 @@ def _get_profile_name_by_id(api, profile_id: str) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
+@app.get("/api/health", summary="Liveness probe", tags=["Sistem"])
+def health() -> dict:
+    """Sederhana — tidak menyentuh MikroTik supaya cocok untuk Coolify liveness."""
+    return {"status": "ok"}
+
+
 @app.get(
     "/api/profile",
     response_model=list[ProfileResponse],
@@ -138,43 +151,13 @@ def _get_profile_name_by_id(api, profile_id: str) -> str:
 @limiter.limit("30/minute")
 def get_profile_list(request: Request) -> list[ProfileResponse]:
     """
-    Ambil semua profile hotspot dari router MikroTik.
+    Ambil semua profile hotspot dari router MikroTik (di-cache 60 detik).
 
-    Profile yang tidak mengikuti format ``N_…|D_…|P_…`` diabaikan.
-    Diurutkan dari harga termurah.
+    Saat MT putus, balikan diambil dari cache stale (tidak raise) supaya
+    halaman pembeli tetap menampilkan daftar paket; hanya tombol "Beli"
+    yang akan 503 selama outage. Lihat ``src.profile_cache``.
     """
-    try:
-        with get_mikrotik_api() as api:
-            resource = api.get_resource("/ip/hotspot/user/profile")
-            profile_list: list[ProfileResponse] = []
-
-            for profile in resource.get():
-                name = profile.get("name", "")
-                if name.startswith("$"):
-                    continue
-
-                parsed = parse_profile_name(name)
-                if not parsed:
-                    continue
-
-                profile_list.append(
-                    ProfileResponse(
-                        id=profile.get("id", ""),
-                        name=parsed["name"],
-                        duration=parsed["duration"],
-                        price=parsed["price"],
-                        rate_limit=profile.get("rate-limit"),
-                    )
-                )
-
-            profile_list.sort(key=lambda p: int(p.price))
-            return profile_list
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Gagal mengambil daftar profile dari MikroTik")
-        raise HTTPException(status_code=500, detail="Gagal terhubung ke router") from exc
+    return get_profiles_cached()
 
 
 @app.post(
@@ -236,6 +219,9 @@ def purchase(request: Request, body: PaymentRequest) -> PaymentResponse:
 
     except HTTPException:
         raise
+    except RouterOsApiConnectionError as exc:
+        logger.warning("MikroTik tidak terhubung saat purchase: %s", exc)
+        raise HTTPException(status_code=503, detail=_MT_DOWN_DETAIL) from exc
     except RuntimeError as exc:
         logger.exception("Gagal membuat transaksi paygatews")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -301,7 +287,9 @@ def create_account(request: Request, body: GetStatusRequest) -> AccountResponse:
             else:
                 logger.info("User %r sudah ada, lewati pembuatan", tx.username)
 
-        mark_transaction_success(body.order_id)
+        # Pakai tx.order_id (kolom DB) supaya WHERE clause cocok — body.order_id
+        # bisa berupa gateway_txn_id karena frontend kirim transaction_id.
+        mark_transaction_success(tx.order_id)
 
         return AccountResponse(
             user=tx.username,
@@ -311,6 +299,9 @@ def create_account(request: Request, body: GetStatusRequest) -> AccountResponse:
 
     except HTTPException:
         raise
+    except RouterOsApiConnectionError as exc:
+        logger.warning("MikroTik tidak terhubung saat account/create: %s", exc)
+        raise HTTPException(status_code=503, detail=_MT_DOWN_DETAIL) from exc
     except Exception as exc:
         logger.exception("Gagal provisi akun untuk order_id=%r", body.order_id)
         raise HTTPException(status_code=500, detail="Gagal menyelesaikan provisi akun") from exc
