@@ -38,6 +38,7 @@ from src.database import (
 )
 from src.mikrotik import get_mikrotik_api
 from src.model import PaygatewsSettings
+from src.paygatews import get_paygatews_client
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,30 @@ async def handle_paygatews_notification(request: Request) -> dict:
                 logger.info("Webhook: user=%r already exists, skipping creation", tx.username)
 
         mark_transaction_success(order_id)
+
+        # Kirim balik kredensial voucher ke paygatews agar tersimpan & tampil
+        # di dashboard transaksi. Best-effort: akun hotspot SUDAH dibuat, jadi
+        # kegagalan di sini tidak boleh menggagalkan provisioning (kita tetap
+        # balas 200). Pakai order.id paygatews, bukan reference lokal.
+        paygatews_order_id = order_data.get("id")
+        if paygatews_order_id:
+            try:
+                get_paygatews_client().submit_voucher(
+                    transaction_id=paygatews_order_id,
+                    username=tx.username,
+                    password=tx.password,
+                )
+                logger.info(
+                    "Webhook: voucher dikirim ke paygatews (order_id=%r, paygatews id=%r)",
+                    order_id, paygatews_order_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Webhook: gagal kirim voucher ke paygatews (id=%r) — "
+                    "provisioning tetap sukses",
+                    paygatews_order_id, exc_info=True,
+                )
+
         return {"status": "ok"}
 
     except HTTPException:

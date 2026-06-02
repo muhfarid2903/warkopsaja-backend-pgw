@@ -4,9 +4,10 @@ Paygatews API client.
 Menggantikan Midtrans Snap client. Menghubungi paygatews gateway untuk
 membuat transaksi dan mengambil status pembayaran.
 
-paygatews menyediakan dua endpoint yang dipakai di sini:
-  - POST /v1/transactions  → buat order + dapat payment_url
-  - GET  /v1/transactions/:id → cek status transaksi
+paygatews menyediakan tiga endpoint yang dipakai di sini:
+  - POST /v1/transactions          → buat order + dapat payment_url
+  - GET  /v1/transactions/:id       → cek status transaksi
+  - POST /v1/transactions/:id/voucher → kirim balik kredensial voucher
 """
 
 import logging
@@ -106,6 +107,48 @@ class PaygatewsClient:
             body = resp.text[:300]
             raise RuntimeError(
                 f"Gateway menolak (HTTP {resp.status_code}): {body}"
+            )
+
+        return resp.json()
+
+    def submit_voucher(
+        self,
+        *,
+        transaction_id: str,
+        username: str,
+        password: str,
+    ) -> dict:
+        """
+        Panggil POST /v1/transactions/:id/voucher di paygatews.
+
+        Mengirim balik kredensial voucher hasil provisioning (user hotspot
+        MikroTik) agar tersimpan & tampil di dashboard transaksi paygatews.
+
+        ``transaction_id`` adalah **order id paygatews** (field ``order.id``
+        di body webhook), BUKAN reference/order_id lokal kita.
+
+        Mengembalikan dict transaksi paygatews terbaru (memuat ``voucher``).
+
+        Raises:
+            RuntimeError: Jika gateway menolak atau tidak bisa dihubungi.
+        """
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/v1/transactions/{transaction_id}/voucher",
+                json={"username": username, "password": password},
+                headers={
+                    "Authorization": f"Bearer {self.settings.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=self.settings.timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Gagal menghubungi gateway: {exc}") from exc
+
+        if resp.status_code != 200:
+            body = resp.text[:300]
+            raise RuntimeError(
+                f"Gateway menolak voucher (HTTP {resp.status_code}): {body}"
             )
 
         return resp.json()
