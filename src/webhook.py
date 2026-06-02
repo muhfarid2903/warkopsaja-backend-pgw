@@ -56,6 +56,40 @@ def _verify_signature(raw_body: bytes, api_key: str, received_signature: str) ->
     return hmac.compare_digest(expected, received_signature)
 
 
+def _revoke_hotspot_user(tx, order_id: str, reason: str | None) -> dict:
+    """
+    Nonaktifkan akun hotspot MikroTik milik order yang dicabut (mis. fraud) dan
+    putuskan sesi aktifnya. Idempoten: aman bila user sudah disabled/terhapus.
+    """
+    try:
+        with get_mikrotik_api() as api:
+            user_resource = api.get_resource("/ip/hotspot/user")
+            matched = [u for u in user_resource.get() if u.get("name") == tx.username]
+            for u in matched:
+                user_resource.set(id=u.get("id"), disabled="yes")
+            # Putuskan sesi yang sedang aktif agar langsung terputus, tidak
+            # menunggu user logout sendiri.
+            active_resource = api.get_resource("/ip/hotspot/active")
+            for a in active_resource.get():
+                if a.get("user") == tx.username:
+                    active_resource.remove(id=a.get("id"))
+        if matched:
+            logger.info(
+                "Webhook: voucher dicabut user=%r order_id=%r reason=%r",
+                tx.username, order_id, reason,
+            )
+        else:
+            logger.warning(
+                "Webhook: revoke order_id=%r — user=%r tak ada di router "
+                "(mungkin sudah dihapus)",
+                order_id, tx.username,
+            )
+        return {"status": "ok", "action": "revoked"}
+    except Exception as exc:
+        logger.exception("Webhook: gagal mencabut voucher order_id=%r", order_id)
+        raise HTTPException(status_code=500, detail="Failed to revoke voucher") from exc
+
+
 async def handle_paygatews_notification(request: Request) -> dict:
     """
     Proses notifikasi pembayaran dari paygatews.
@@ -95,7 +129,7 @@ async def handle_paygatews_notification(request: Request) -> dict:
 
     # ── Cek event ───────────────────────────────────────────────────────
     event = body.get("event", "")
-    if event != "order.paid":
+    if event not in ("order.paid", "order.revoked"):
         logger.info("Webhook event %r diabaikan", event)
         return {"status": "ignored", "reason": f"event {event!r} not handled"}
 
@@ -105,12 +139,16 @@ async def handle_paygatews_notification(request: Request) -> dict:
     if not order_id:
         raise HTTPException(status_code=400, detail="Missing order reference")
 
-    # ── Cek idempotency ────────────────────────────────────────────────
     tx = get_transaction(order_id)
     if not tx:
         logger.warning("Webhook: order_id=%r tidak ditemukan di DB lokal", order_id)
         return {"status": "ignored", "reason": "order not found in local DB"}
 
+    # ── order.revoked: nonaktifkan voucher (mis. fraud) ────────────────
+    if event == "order.revoked":
+        return _revoke_hotspot_user(tx, order_id, body.get("reason"))
+
+    # ── order.paid: cek idempotency lalu provisioning ──────────────────
     if tx.status == "success":
         logger.info("Webhook already processed for order_id=%r, skipping", order_id)
         return {"status": "ignored", "reason": "already processed"}
