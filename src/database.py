@@ -47,7 +47,12 @@ class Transaction(SQLModel, table=True):
 # Engine
 # ---------------------------------------------------------------------------
 
-_DB_URL = os.getenv("DATABASE_URL", "sqlite:///transactions-pgw.db")
+# Default DB di /app/data — direktori yang dimaksudkan PERSISTEN (Dockerfile
+# `mkdir -p /app/data`, compose mount `./data:/app/data`). Di Coolify WAJIB ada
+# Persistent Storage yang di-mount ke /app/data; tanpa itu data hilang tiap
+# redeploy. Path lama "sqlite:///transactions-pgw.db" menaruh file di /app/
+# (efemeral). Override penuh via env DATABASE_URL bila perlu.
+_DB_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/transactions-pgw.db")
 _engine = create_engine(_DB_URL, connect_args={"check_same_thread": False})
 
 
