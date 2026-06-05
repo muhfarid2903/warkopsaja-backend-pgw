@@ -21,7 +21,7 @@ Run lokal
 """
 
 import logging
-import random
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 
@@ -105,12 +105,44 @@ setup_cors(app)
 # Helper utilities
 # ---------------------------------------------------------------------------
 
+# Karakter tak ambigu (tanpa 0/O/1/l/i/q/s/z dll.) supaya mudah dibaca pembeli.
+_CRED_CHARS = "abcdefghjkmnprtuvwxy3467"
+
+
+def _random_token(length: int) -> str:
+    """Token acak kriptografis dari karakter tak ambigu."""
+    return "".join(secrets.choice(_CRED_CHARS) for _ in range(length))
+
+
 def generate_credentials(length: int = 4) -> tuple[str, str]:
-    """Generate random username and password using unambiguous characters only."""
-    chars = "abcdefghjkmnprtuvwxy3467"
-    username = "".join(random.choices(chars, k=length))
-    password = "".join(random.choices(chars, k=length))
-    return username, password
+    """Generate random username and password using unambiguous characters only.
+
+    Memakai ``secrets`` (CSPRNG), bukan ``random``, karena kredensial ini
+    menggerbangi akses WiFi berbayar dan tidak boleh bisa diprediksi.
+    """
+    return _random_token(length), _random_token(length)
+
+
+def _generate_unique_username(api, length: int = 4, max_tries: int = 10) -> str:
+    """
+    Generate username yang dijamin belum dipakai di router.
+
+    Ruang nama length=4 kecil (~331k), jadi tabrakan mungkin terjadi. Bila
+    user dengan nama sama sudah ada, webhook/account-create akan MELEWATI
+    pembuatan user → pembeli berikutnya bisa tertukar akun. Kita cegah dengan
+    cek live ke router, dan menaikkan panjang token bila terus bentrok.
+    """
+    user_resource = api.get_resource("/ip/hotspot/user")
+    existing = {u.get("name") for u in user_resource.get()}
+    for attempt in range(max_tries):
+        # Naikkan panjang token bila beberapa percobaan pertama bentrok.
+        candidate = _random_token(length + attempt // 3)
+        if candidate not in existing:
+            return candidate
+    raise HTTPException(
+        status_code=500,
+        detail="Gagal membuat username unik, coba lagi",
+    )
 
 
 def _get_profile_name_by_id(api, profile_id: str) -> str:
@@ -178,6 +210,10 @@ def purchase(request: Request, body: PaymentRequest) -> PaymentResponse:
     try:
         with get_mikrotik_api() as api:
             profile_name = _get_profile_name_by_id(api, body.profile_id)
+            # Generate username yang dijamin belum ada di router (cek live)
+            # selagi koneksi masih terbuka, lalu password terpisah.
+            username = _generate_unique_username(api, length=4)
+            _, password = generate_credentials(length=4)
 
         parsed = parse_profile_name(profile_name)
         if not parsed or not parsed.get("price"):
@@ -188,7 +224,6 @@ def purchase(request: Request, body: PaymentRequest) -> PaymentResponse:
 
         price = int(parsed["price"])
         order_id = f"ORDER-{uuid.uuid4().hex[:12].upper()}"
-        username, password = generate_credentials(length=4)
 
         # Panggil paygatews
         client = get_paygatews_client()
@@ -208,6 +243,7 @@ def purchase(request: Request, body: PaymentRequest) -> PaymentResponse:
             profile_id=body.profile_id,
             username=username,
             password=password,
+            amount=price,
             gateway_txn_id=gw_response.get("id"),
         )
 

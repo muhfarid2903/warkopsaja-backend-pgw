@@ -28,12 +28,14 @@ Setelah signature terverifikasi dan pembayaran dikonfirmasi:
 
 import hashlib
 import hmac
+import json
 import logging
 
 from fastapi import HTTPException, Request
 
 from src.database import (
     get_transaction,
+    mark_transaction_failed,
     mark_transaction_success,
 )
 from src.mikrotik import get_mikrotik_api
@@ -73,6 +75,10 @@ def _revoke_hotspot_user(tx, order_id: str, reason: str | None) -> dict:
             for a in active_resource.get():
                 if a.get("user") == tx.username:
                     active_resource.remove(id=a.get("id"))
+        # Tandai gagal di DB lokal supaya status konsisten dengan kondisi
+        # voucher yang sudah dinonaktifkan (mencegah account/create membuat
+        # ulang akun untuk order yang dicabut).
+        mark_transaction_failed(order_id)
         if matched:
             logger.info(
                 "Webhook: voucher dicabut user=%r order_id=%r reason=%r",
@@ -115,9 +121,9 @@ async def handle_paygatews_notification(request: Request) -> dict:
         HTTPException 500: Gagal membuat akun di MikroTik.
     """
     raw_body = await request.body()
-    body = await request.json()
 
-    # ── Verifikasi signature ────────────────────────────────────────────
+    # ── Verifikasi signature SEBELUM mem-parse body ─────────────────────
+    # Jangan memproses (mem-parse JSON) input yang belum terverifikasi.
     received_sig = request.headers.get("x-signature", "")
     if not received_sig:
         raise HTTPException(status_code=401, detail="X-Signature header wajib")
@@ -126,6 +132,12 @@ async def handle_paygatews_notification(request: Request) -> dict:
     if not _verify_signature(raw_body, settings.api_key, received_sig):
         logger.warning("Invalid paygatews signature")
         raise HTTPException(status_code=401, detail="Signature tidak valid")
+
+    # ── Body terverifikasi → baru parse JSON ────────────────────────────
+    try:
+        body = json.loads(raw_body)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Body bukan JSON valid") from exc
 
     # ── Cek event ───────────────────────────────────────────────────────
     event = body.get("event", "")
@@ -152,6 +164,20 @@ async def handle_paygatews_notification(request: Request) -> dict:
     if tx.status == "success":
         logger.info("Webhook already processed for order_id=%r, skipping", order_id)
         return {"status": "ignored", "reason": "already processed"}
+
+    # ── Verifikasi nominal pembayaran ──────────────────────────────────
+    # Pastikan jumlah yang dibayar sama dengan harga paket yang dicatat saat
+    # /api/purchase. Mencegah provisioning untuk pembayaran sebagian/keliru.
+    # tx.amount == 0 berarti transaksi lama (sebelum kolom amount ada) →
+    # lewati pengecekan agar kompatibel mundur.
+    paid_amount = body.get("payment", {}).get("amount")
+    if tx.amount and paid_amount is not None and int(paid_amount) != tx.amount:
+        logger.warning(
+            "Webhook: nominal tidak cocok order_id=%r (dibayar=%r, diharapkan=%r)",
+            order_id, paid_amount, tx.amount,
+        )
+        mark_transaction_failed(order_id)
+        raise HTTPException(status_code=400, detail="Nominal pembayaran tidak sesuai")
 
     # ── Buat akun hotspot di MikroTik ──────────────────────────────────
     try:
