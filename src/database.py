@@ -37,6 +37,7 @@ class Transaction(SQLModel, table=True):
     profile_id: str
     username: str
     password: str = ""  # password hotspot (dibutuhkan webhook)
+    amount: int = 0     # harga paket (rupiah) — diverifikasi saat webhook PAID
     gateway_txn_id: Optional[str] = None  # ID transaksi di paygatews
     status: str = "pending"             # pending | success | failed
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -70,6 +71,7 @@ def log_transaction(
     profile_id: str,
     username: str,
     password: str = "",
+    amount: int = 0,
     gateway_txn_id: str | None = None,
 ) -> Transaction:
     """
@@ -90,6 +92,7 @@ def log_transaction(
             profile_id=profile_id,
             username=username,
             password=password,
+            amount=amount,
             gateway_txn_id=gateway_txn_id,
         )
         session.add(tx)
